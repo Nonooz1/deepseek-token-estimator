@@ -248,12 +248,18 @@ python selftest.py
 
 覆盖：分词器加载、9 项 token 基线、真实文件抽取、5 种编码识别、二进制过滤、
 压缩包与 Keil 工程识别（含 C51 产物命名）、产物过滤边界、`--exclude`、
-目录分布、启动脚本完整性、图形界面。
+目录分布、启动脚本完整性、换行符策略、图形界面。
 
-- 命令行环境：**通过 84 项**（无 tkinter 时跳过图形界面那 11 项）
-- 图形界面环境：**通过 95 项**
+- 命令行环境：**通过 85 项**（无 tkinter 时跳过图形界面那 11 项）
+- 图形界面环境：**通过 96 项**
 
 两个环境用不同的分词器后端（`transformers` / `tokenizers`），算出的数字**完全一致**。
+
+> **换行符会影响 token 数**：`samples/sample.txt` 用 LF 是 64 token，
+> 转成 CRLF 会变成 73。而 Git for Windows 默认 `core.autocrlf=true`，
+> clone 时会偷偷把 LF 转成 CRLF。所以仓库里放了 `.gitattributes`
+> （`* -text`）关掉所有转换，保证任何人 clone 到的字节都和提交时一致。
+> 如果你要改这个文件，别去掉 `* -text`。
 
 ---
 
@@ -311,6 +317,7 @@ python selftest.py
 | **`estimate.py`** | ⭐ 多格式 + 压缩包估算（图形界面底层也是它） |
 | **`count_tokens.py`** | 纯文本 / 对话模板的 token 计算 |
 | `setup_env.cmd` | 一键建 `.venv` 并装依赖（Windows） |
+| `.gitattributes` | 钉死换行符，防止 clone 后 token 数变化 |
 | `start_gui.cmd` / `drag_files_here.cmd` | 备用启动入口 |
 | `gui.py` | 图形界面实现 |
 | `selftest.py` | 自检脚本 |
