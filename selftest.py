@@ -330,6 +330,60 @@ if os.path.exists(ga):
 else:
     check(".gitattributes 存在（防 CRLF 转换）", False, True)
 
+# ---- rar 外部工具探测 ----
+print()
+print("=" * 62)
+print("3f. .rar 外部工具探测（装了 7z 不等于能读 rar）")
+print("=" * 62)
+
+# 命令行模板要按程序名正确区分
+check("unrar 用 x -idq",
+      "-idq" in E2._rar_cmds(r"C:\x\unrar.exe")[1], True)
+check("WinRAR 用 x -ibck",
+      "-ibck" in E2._rar_cmds(r"C:\x\Rar.exe")[1], True)
+check("7z 用 -o<dest>",
+      "-o{dest}" in E2._rar_cmds(r"C:\x\7z.exe")[1], True)
+check("Bandizip 用 -o:<dest>",
+      "-o:{dest}" in E2._rar_cmds(r"C:\x\bz.exe")[1], True)
+# unrar 不带 -o 参数，目标目录是位置参数
+check("unrar 目标目录是位置参数",
+      "{dest}" in E2._rar_cmds(r"C:\x\unrar.exe")[1][-1], True)
+
+# 候选枚举不能崩、不能卡死（内部有目录数保险丝）
+_cands = E2._rar_candidates()
+check("候选枚举返回列表", isinstance(_cands, list), True)
+check("候选都是真实存在的文件", all(os.path.isfile(c) for c in _cands), True)
+print(f"         （本机找到 {len(_cands)} 个候选）")
+
+# _rmtree 必须能删掉一棵嵌套目录树
+_t = tempfile.mkdtemp(prefix="tokrm_")
+os.makedirs(os.path.join(_t, "a", "b"))
+with open(os.path.join(_t, "a", "b", "f.txt"), "w", encoding="utf-8") as fh:
+    fh.write("x")
+E2._rmtree(_t)
+check("_rmtree 能删掉嵌套目录", os.path.exists(_t), False)
+
+# 真实 rar：有的话做端到端验证（本机没有就跳过）
+_REAL_RAR = os.path.join(os.path.expanduser("~/Downloads"),
+                         "PDMS51PC0AE_TZ3_FC_0C_22.5W.rar")
+if not os.path.exists(_REAL_RAR):
+    print("  [skip] 没有真实 .rar 样本，跳过端到端验证")
+else:
+    _tool = E2.find_rar_tool(_REAL_RAR)
+    check("能找到真能读 rar 的工具", _tool is not None, True)
+    if _tool:
+        print(f"         用的工具: {os.path.basename(_tool)}")
+    # 精简版/旧版 7z 会被 _rar_can_read 挡掉，不该被选中
+    if _tool:
+        check("选中的工具确实能列出成员", E2._rar_can_read(_tool, _REAL_RAR), True)
+    _dest, _err = E2.extract_rar_to_temp(_REAL_RAR)
+    check("rar 能解出内容", _dest is not None, True)
+    if _dest:
+        _n = sum(len(fs) for _, _, fs in os.walk(_dest))
+        check("解出的文件数 > 100", _n > 100, True)
+        print(f"         解出 {_n} 个文件")
+        E2._rmtree(_dest)
+
 # ---- 图形界面 ----
 print()
 print("=" * 62)

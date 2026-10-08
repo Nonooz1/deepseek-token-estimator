@@ -164,26 +164,63 @@ TAR_EXT = {".tar", ".tgz", ".tbz2", ".txz",
            ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"}
 ARCHIVE_EXT = {".zip", ".7z", ".rar"} | TAR_EXT
 
-# .rar 需要外部工具（unrar / 7-Zip / Bandizip）。纯 Python 做不到：
-# Windows 自带的 bsdtar 只能「列出」rar 成员，解出来的数据是错的
+# .rar 需要外部工具（unrar / 7-Zip / WinRAR）。纯 Python 做不到。
+# Windows 自带的 bsdtar 虽然能「列出」rar 成员，解出来的数据是错的
 # （实测要 5192 字节只给 53 字节），所以不能拿它当后端。
-RAR_TOOLS = [
-    ("unrar", ["{exe}", "x", "-y", "-idq", "{src}", "{dest}" + os.sep]),
-    ("unrar-free", ["{exe}", "x", "-y", "{src}", "{dest}"]),
-    ("7z", ["{exe}", "x", "-y", "-bd", "-o{dest}", "{src}"]),
-    ("7za", ["{exe}", "x", "-y", "-bd", "-o{dest}", "{src}"]),
-    ("7zz", ["{exe}", "x", "-y", "-bd", "-o{dest}", "{src}"]),
-    ("bz", ["{exe}", "x", "-y", "-o:{dest}", "{src}"]),
-    ("Rar.exe", ["{exe}", "x", "-y", "-ibck", "{src}", "{dest}" + os.sep]),
-]
+#
+# ⚠️ 关键教训：**装了 7z.exe 不等于能读 rar**。
+# 很多软件会顺手带一个精简版 7za.exe 或旧版 7z.exe，它们都不支持 rar。
+# 同一台机器上实测：
+#   VMware Tools\7za.exe                     -> 读不了（精简版）
+#   AOMEI Partition Assistant\x64\7z.exe     -> 读不了（7-Zip 9.20 太老）
+#   AOMEI Partition Assistant\7z.exe         -> 能读 ✓
+# 所以不能只看文件名，必须**拿真实文件试一下**（用 list 命令，很快）。
+RAR_TOOL_NAMES = ["unrar", "unrar-free", "7z", "7za", "7zz", "bz", "Rar"]
+
+# 常见安装位置：先查这些，命中率高
 RAR_TOOL_DIRS = [
     r"C:\Program Files\7-Zip", r"C:\Program Files (x86)\7-Zip",
     r"C:\Program Files\WinRAR", r"C:\Program Files (x86)\WinRAR",
     r"C:\Program Files\Bandizip", r"C:\Program Files (x86)\Bandizip",
     r"C:\Program Files\NanaZip", r"C:\Program Files (x86)\NanaZip",
+    r"C:\Program Files\PeaZip", r"C:\Program Files (x86)\PeaZip",
 ]
+
+# 兜底：在这些根目录下**有界**递归搜。很多软件（分区工具、杀软、驱动工具）
+# 会自带一份 7z.exe，藏在很深的子目录里，硬编码路径根本列不全。
+RAR_SEARCH_ROOTS = [
+    os.environ.get("ProgramFiles", r"C:\Program Files"),
+    os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    os.environ.get("ProgramData", r"C:\ProgramData"),
+    os.environ.get("LOCALAPPDATA", ""),
+]
+RAR_SEARCH_MAX_DEPTH = 4
+RAR_SEARCH_MAX_DIRS = 4000      # 保险丝：别在大盘上走太久
+
 # 超过这个大小就不自动解压 rar，避免临时目录被撑爆
 RAR_EXTRACT_LIMIT = 200 * 1024 * 1024
+
+
+def _rmtree(path):
+    """删目录。刻意不用 shutil.rmtree —— 某些环境（安全软件、回收站钩子）
+    会拦截它并抛 SHFileOperationW 失败，逐文件删更稳。"""
+    if not os.path.isdir(path):
+        return
+    for dirpath, dirnames, filenames in os.walk(path, topdown=False):
+        for fn in filenames:
+            try:
+                os.remove(os.path.join(dirpath, fn))
+            except OSError:
+                pass
+        for dn in dirnames:
+            try:
+                os.rmdir(os.path.join(dirpath, dn))
+            except OSError:
+                pass
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
 
 # 编译/链接产物：是文本但没营养，默认跳过（加 --all 才包含）
 # 参考一个真实 Keil C51 工程（Nuvoton MS51）里出现的东西
@@ -250,43 +287,115 @@ def archive_kind(name):
     return None
 
 
-def find_rar_tool():
-    """找一个能解 rar 的外部程序。找不到返回 None。"""
-    for exe, argv in RAR_TOOLS:
-        found = shutil.which(exe)
-        if not found:
-            for d in RAR_TOOL_DIRS:
-                cand = os.path.join(d, exe)
-                if os.path.isfile(cand):
-                    found = cand
-                    break
-        if found:
-            return found, argv
+def _rar_cmds(exe):
+    """按程序名给出 (列目录命令, 解压命令模板)。模板里 {src}/{dest} 待替换。"""
+    low = os.path.basename(exe).lower()
+    if low.startswith("unrar"):
+        return ([exe, "l", "-idq", "{src}"],
+                [exe, "x", "-y", "-idq", "{src}", "{dest}" + os.sep])
+    if low.startswith("rar"):
+        return ([exe, "l", "-ibck", "{src}"],
+                [exe, "x", "-y", "-ibck", "{src}", "{dest}" + os.sep])
+    if low.startswith("bz"):
+        return ([exe, "l", "{src}"],
+                [exe, "x", "-y", "-o:{dest}", "{src}"])
+    # 7-Zip 家族：7z / 7za / 7zz
+    return ([exe, "l", "-y", "-bd", "{src}"],
+            [exe, "x", "-y", "-bd", "-o{dest}", "{src}"])
+
+
+def _rar_candidates():
+    """按可能性从高到低产出候选程序路径（已去重）。"""
+    seen, out = set(), []
+
+    def add(p):
+        if p and os.path.isfile(p):
+            key = os.path.normcase(os.path.abspath(p))
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+
+    # 1) PATH 上的
+    for name in RAR_TOOL_NAMES:
+        add(shutil.which(name))
+
+    # 2) 常见安装目录
+    for d in RAR_TOOL_DIRS:
+        for name in RAR_TOOL_NAMES:
+            add(os.path.join(d, name if name.lower().endswith(".exe") else name + ".exe"))
+
+    # 3) 兜底：有界递归搜（很多软件自带 7z.exe）
+    wanted = {"7z.exe", "7za.exe", "7zz.exe", "unrar.exe", "rar.exe"}
+    scanned = 0
+    for root in RAR_SEARCH_ROOTS:
+        if not root or not os.path.isdir(root):
+            continue
+        base = root.rstrip("\\/").count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(root):
+            scanned += 1
+            if scanned > RAR_SEARCH_MAX_DIRS:
+                break
+            if dirpath.count(os.sep) - base >= RAR_SEARCH_MAX_DEPTH:
+                dirnames[:] = []
+            for fn in filenames:
+                if fn.lower() in wanted:
+                    add(os.path.join(dirpath, fn))
+    return out
+
+
+def _rar_can_read(exe, src):
+    """用 list 命令快速确认这个程序真能读这个 rar（不解压，很快）。
+    这一步是必须的：精简版 7za、旧版 7z 都会「装得像但读不了」。"""
+    list_cmd = [a.format(exe=exe, src=src, dest="") for a in _rar_cmds(exe)[0]]
+    try:
+        r = subprocess.run(list_cmd, capture_output=True, timeout=30)
+    except Exception:
+        return False
+    if r.returncode != 0:
+        return False
+    return bool((r.stdout or b"").strip())
+
+
+def find_rar_tool(path=None):
+    """找一个**确实能读这个 rar** 的外部程序。
+    path 为 None 时只做存在性判断（返回第一个候选）。找不到返回 None。"""
+    cands = _rar_candidates()
+    if path is None:
+        return cands[0] if cands else None
+    for exe in cands:
+        if _rar_can_read(exe, path):
+            return exe
     return None
 
 
 def extract_rar_to_temp(path):
-    """把 rar 解到临时目录，返回 (临时目录对象, 错误信息)。
-    调用方负责在 with 块里用完就清理。"""
-    tool = find_rar_tool()
-    if tool is None:
+    """把 rar 解到临时目录，返回 (临时目录, 错误信息)。用完由调用方 _rmtree 清理。"""
+    exe = find_rar_tool(path)
+    if exe is None:
+        cands = _rar_candidates()
+        if cands:
+            names = "、".join(sorted({os.path.basename(c) for c in cands}))
+            return None, (f"找到 {names}，但都读不了这个 .rar"
+                          "（精简版 7za / 旧版 7z 不支持 rar）。"
+                          "装完整版 7-Zip 或 WinRAR 即可，也可以先手动解压成 zip。")
         return None, ("读 .rar 需要外部程序（unrar 或 7-Zip）。"
                       "装一个 7-Zip 后会自动识别；也可以先手动解压成 zip。")
-    exe, argv = tool
+
     dest = tempfile.mkdtemp(prefix="tokrar_")
-    cmd = [a.format(exe=exe, src=path, dest=dest) for a in argv]
+    cmd = [a.format(exe=exe, src=path, dest=dest) for a in _rar_cmds(exe)[1]]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, timeout=600)
     except subprocess.TimeoutExpired:
-        shutil.rmtree(dest, ignore_errors=True)
-        return None, "解压超时（超过 5 分钟）"
+        _rmtree(dest)
+        return None, "解压超时（超过 10 分钟）"
     except Exception as e:
-        shutil.rmtree(dest, ignore_errors=True)
+        _rmtree(dest)
         return None, f"解压失败：{e}"
-    if r.returncode != 0:
-        shutil.rmtree(dest, ignore_errors=True)
+    if r.returncode != 0 or not os.listdir(dest):
+        _rmtree(dest)
         msg = (r.stderr or r.stdout or b"").decode("utf-8", "replace").strip()
-        return None, f"解压失败（{os.path.basename(exe)} 退出码 {r.returncode}）{msg[:200]}"
+        return None, (f"解压失败（{os.path.basename(exe)} 退出码 {r.returncode}）"
+                      f"{msg[:200]}")
     return dest, ""
 
 
@@ -627,7 +736,7 @@ def _iter_rar_path(path, depth, max_depth):
                     continue
                 yield from _iter_member(rel, data, depth, max_depth)
     finally:
-        shutil.rmtree(dest, ignore_errors=True)
+        _rmtree(dest)
 
 
 def _iter_archive_bytes(virtual, data, depth, max_depth):
