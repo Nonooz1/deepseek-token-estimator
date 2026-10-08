@@ -1,0 +1,18 @@
+# ---- 核心：分词器（必需，二选一即可，两个都装也可以）----
+# 轻量后端：只做分词，够 GUI 和 estimate.py 用
+tokenizers>=0.15
+
+# 重量后端：支持 --chat 对话模板。装了会优先用它
+# transformers>=4.40
+# jinja2>=3.1
+
+# ---- 文件格式解析 ----
+pypdf>=4.0            # PDF
+python-docx>=1.1      # Word .docx
+openpyxl>=3.1         # Excel .xlsx
+
+# ---- 压缩包 ----
+py7zr>=0.20           # .7z（zip / tar 用标准库，无需安装）
+
+# ---- 图形界面（可选；不装也能用命令行）----
+tkinterdnd2>=0.4      # 拖拽支持。装不上只是没有拖拽，界面照常

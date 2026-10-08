@@ -1,0 +1,5 @@
+DeepSeek 是一个大语言模型，它的分词器使用 BPE 算法。
+Token 是模型处理文本的基本单位，也是计费单位。
+
+Hello, world! This is a test of the DeepSeek tokenizer.
+The quick brown fox jumps over the lazy dog. 1234567890

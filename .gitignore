@@ -1,0 +1,27 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- 自检/演示生成物（由 _make_fixture.py 生成，不入库）----
+_fixture/
+
+# ---- 运行时产物 ----
+error.log
+*.log
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store

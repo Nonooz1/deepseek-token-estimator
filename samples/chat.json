@@ -1,0 +1,4 @@
+[
+  {"role": "system", "content": "你是一个乐于助人的助手。"},
+  {"role": "user", "content": "帮我用一句话解释什么是 token。"}
+]
