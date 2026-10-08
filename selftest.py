@@ -92,7 +92,10 @@ sample_txt = find_sample("sample.txt")
 if sample_txt:
     text, label, note = extract(sample_txt)
     check("sample.txt 可读取", text is not None, True)
-    check("sample.txt token 数", count(tok, text), 64)
+    # 换行符会影响 token 数（LF 64 / CRLF 73），先归一化再比，
+    # 免得不同平台/编辑器造成的假失败。仓库内的换行符由 .gitattributes 钉死。
+    norm = text.replace("\r\n", "\n").replace("\r", "\n")
+    check("sample.txt token 数", count(tok, norm), 64)
 
 # 挑几个真实文件试试（存在才测）
 cands = [
@@ -316,6 +319,16 @@ launcher = os.path.join(HERE, "Token估算器.pyw")
 if os.path.exists(launcher):
     src = open(launcher, encoding="utf-8").read()
     check("启动器不含写死的个人路径", "C:\\Users\\" in src, False)
+
+# 换行符策略：Git for Windows 默认 core.autocrlf=true，
+# 会把 LF 转成 CRLF，导致同一份文件在不同机器上算出不同 token 数。
+# .gitattributes 里必须显式关掉转换。
+ga = os.path.join(HERE, ".gitattributes")
+if os.path.exists(ga):
+    gasrc = open(ga, encoding="utf-8").read()
+    check(".gitattributes 关掉了换行符转换", "* -text" in gasrc, True)
+else:
+    check(".gitattributes 存在（防 CRLF 转换）", False, True)
 
 # ---- 图形界面 ----
 print()
